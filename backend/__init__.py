@@ -56,6 +56,8 @@ def create_app(config=None):
         image_delivery='proxy'
     app.config.update(STORAGE_BACKEND=storage_backend,R2_ENDPOINT_URL=os.getenv('R2_ENDPOINT_URL',''),R2_ACCESS_KEY_ID=os.getenv('R2_ACCESS_KEY_ID',''),R2_SECRET_ACCESS_KEY=os.getenv('R2_SECRET_ACCESS_KEY',''),R2_BUCKET_NAME=legacy_bucket,R2_PDF_BUCKET_NAME=os.getenv('R2_PDF_BUCKET_NAME',''),R2_IMAGE_BUCKET_NAME=os.getenv('R2_IMAGE_BUCKET_NAME',''),R2_PREFIX=os.getenv('R2_PREFIX','pyq'))
     app.config.update(CONTENT_CACHE_URL=os.getenv('REDIS_URL',''), CACHE_NAMESPACE=os.getenv('CACHE_NAMESPACE','pyq:content:v1'), CONTENT_CACHE_TTL=int(os.getenv('CONTENT_CACHE_TTL','60')), IMAGE_DELIVERY=image_delivery, IMAGE_CDN_BASE_URL=os.getenv('IMAGE_CDN_BASE_URL',''), IMAGE_CDN_MANIFEST=os.getenv('IMAGE_CDN_MANIFEST',''))
+    app.config.update(ANALYTICS_ENABLED=os.getenv('ANALYTICS_ENABLED','true').lower()=='true',
+                      ANALYTICS_EXCLUDE_TRAFFIC=os.getenv('ANALYTICS_EXCLUDE_TRAFFIC','false').lower()=='true')
     if config: app.config.update(config)
     from . import content_cache
     from .storage import configure_delivery
@@ -76,6 +78,8 @@ def create_app(config=None):
     app.config['UPLOAD_DIR']=str((root/upload_path).resolve() if not upload_path.is_absolute() else upload_path)
     Path(app.config['UPLOAD_DIR']).mkdir(parents=True, exist_ok=True)
     db.init_app(app); Migrate(app, db); limiter.init_app(app)
+    from .analytics import install as install_analytics
+    install_analytics(app)
     from .performance import install
     install(app, db)
     @app.before_request
@@ -90,9 +94,16 @@ def create_app(config=None):
         response.headers['Referrer-Policy']='same-origin'
         response.headers['X-Frame-Options']='SAMEORIGIN'
         response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-src 'self' https://tcsion.com https://www.tcsion.com; object-src 'none'; base-uri 'self'"
+        # Keep third-party ad permissions off every other route, including the SPA.
+        if request.path.startswith('/study/papers/') and response.status_code==200:
+            from flask import g
+            if getattr(g,'study_ads_allowed',False):
+                response.headers['Content-Security-Policy']=response.headers['Content-Security-Policy'].replace("script-src 'self'", "script-src 'self' https://pagead2.googlesyndication.com https://fundingchoicesmessages.google.com").replace("frame-src 'self'", "frame-src 'self' https://googleads.g.doubleclick.net https://tpc.googlesyndication.com https://fundingchoicesmessages.google.com").replace("connect-src 'self'", "connect-src 'self' https://pagead2.googlesyndication.com https://googleads.g.doubleclick.net").replace("img-src 'self' data:", "img-src 'self' data: https://pagead2.googlesyndication.com https://googleads.g.doubleclick.net")
         if app.extensions.get('image_origin'):
             response.headers['Content-Security-Policy']=response.headers['Content-Security-Policy'].replace("img-src 'self' data:","img-src 'self' data: "+app.extensions['image_origin'])
         if request.path.startswith('/api/') and not request.path.startswith('/api/images/'): response.headers['Cache-Control']='no-store'
+        if request.path in ('/api/home','/api/session','/api/study-featured'):
+            response.headers['X-Robots-Tag']='noindex'
         # Compress shared public content only; session/CSRF and answer APIs are excluded.
         shared=request.path in ('/api/home','/api/stats','/api/catalog','/api/metadata','/api/courses','/api/papers','/api/demo-papers') or bool(re.fullmatch(r'/api/papers/\d+/questions',request.path))
         if shared:
@@ -138,6 +149,8 @@ def create_app(config=None):
         db.session.rollback(); return jsonify(error=str(e)),400
     from .ai_solutions import bp as ai_solutions
     app.register_blueprint(ai_solutions)
+    from .content_quality import quality
+    app.register_blueprint(quality)
     from .study_pages import study
     app.register_blueprint(study)
     from .site_pages import site,metadata

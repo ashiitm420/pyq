@@ -18,7 +18,13 @@ def owned(id):
         cleanup_sessions(guest_hash=g.guest_hash);abort(410,description='This temporary session has expired. Your latest paper score is retained; you can retake the paper.')
     return a
 
-def attempt_json(a):return {'id':a.id,'paper_id':a.paper_id,'title':a.title,'mode':a.mode,'status':a.status,'started_at':a.started_at,'deadline':a.deadline,'submitted_at':a.submitted_at,'server_time':time.time(),'result':a.result,'expires_at':a.expires_at,'records_progress':a.records_progress,'palette':[{'question_id':i.question_id,'number':i.snapshot['number'],'state':palette_state(i),'visited':i.visited,'marked':i.marked} for i in sorted(a.items,key=lambda i:(i.snapshot.get("paper_id",0),question_order(i.snapshot["number"]),i.position))]}
+def attempt_json(a):
+    items=list(a.items)
+    review_index={item.question_id:n for n,item in enumerate(sorted(items,key=lambda i:i.position))}
+    return {'id':a.id,'paper_id':a.paper_id,'title':a.title,'mode':a.mode,'status':a.status,'started_at':a.started_at,'deadline':a.deadline,'submitted_at':a.submitted_at,'server_time':time.time(),'result':a.result,'expires_at':a.expires_at,'records_progress':a.records_progress,
+        'palette':[{'question_id':i.question_id,'number':i.snapshot['number'],'state':palette_state(i),'visited':i.visited,'marked':i.marked,
+                    'outcome':i.outcome if a.status!='ACTIVE' else None,'review_index':review_index[i.question_id]}
+                   for i in sorted(items,key=lambda i:(i.snapshot.get('paper_id',0),question_order(i.snapshot['number']),i.position))]}
 
 def attempt_status_json(a):
     # Deliberately excludes a.items/snapshots. This endpoint is used for the
@@ -117,6 +123,8 @@ def finish_new_attempt(a,snapshots):
     state=SimpleNamespace(**{name:getattr(a,name) for name in (
         'id','paper_id','title','mode','status','started_at','deadline',
         'submitted_at','result','expires_at','records_progress')})
+    from .analytics import record
+    record(a)
     with span('commit'):
         db.session.commit()
     # Signing/serializing all images must not occupy a pooled DB connection.
@@ -184,6 +192,9 @@ def start():
     if not snapshots:abort(409,description='Questions not imported yet.')
     # Unknown keys/marks remain ungraded; the result reports them separately.
     a=Attempt(user_id=None,guest_hash=g.guest_hash,paper_id=p.id if p else None,mode=mode,title=title[:300],deadline=deadline,records_progress=p is not None,expires_at=(deadline+RESULT_TTL_SECONDS) if deadline else time.time()+ACTIVE_TTL_SECONDS)
+    if p and current_app.config.get('ANALYTICS_ENABLED',True) and getattr(g.user,'role',None)!='ADMIN' and not current_app.config.get('ANALYTICS_EXCLUDE_TRAFFIC',False):
+        from .analytics import paper_context
+        a.analytics_context={**paper_context(p),'initial_mode':mode}
     return finish_new_attempt(a,snapshots)
 
 @exams.get('/attempts')
@@ -295,6 +306,12 @@ def review(id):
     from .ai_solutions import review_solutions
     result=paginate(q,lambda i:{'question':i.snapshot,'answer':i.answer,'outcome':i.outcome,'awarded':i.awarded,'manual_note':i.manual_note})
     result['items']=review_solutions(result['items'])
+    use_paper_image_delivery(a.paper_id)
+    prepare_image_paths([i['question'] for i in result['items']],attempt_image_ttl(a))
+    for item in result['items']:
+        # Keep submitted snapshot answers/marks; only replace image metadata.
+        images=question_with_image_urls(item['question'])['images']
+        item['question']={**item['question'],'images':[{k:v for k,v in image.items() if k!='_asset_path'} for image in images]}
     return jsonify(result)
 
 @exams.route('/questions/<int:id>/bookmark',methods=['POST','DELETE'])
@@ -391,6 +408,8 @@ def switch_mode(id):
         if not 60<=duration<=28800:abort(400,description='Duration must be 1–480 minutes')
         deadline=time.time()+duration
     # Change the existing session in place. No new snapshots or image URLs.
+    if source.analytics_context:
+        source.analytics_context={**source.analytics_context,'assisted':True}
     source.mode=mode
     source.deadline=deadline
     source.expires_at=(deadline+RESULT_TTL_SECONDS) if deadline else time.time()+ACTIVE_TTL_SECONDS
@@ -403,6 +422,8 @@ def switch_mode(id):
             'explanation':i.snapshot['explanation'],'answer_status':i.snapshot['answer_status']}}
             for i in source.items if i.answer is not None]
     payload={**attempt_status_json(source),'mode':source.mode,'title':source.title,'feedback':feedback}
+    from .analytics import update_expiry
+    update_expiry(source)
     db.session.commit()
     return jsonify(payload),200
 

@@ -67,6 +67,7 @@ class SourceEntry(db.Model):
     url = db.Column(db.Text)
 
 class Question(db.Model):
+    paper = db.relationship('Paper')
     __table_args__ = (db.Index('ix_question_paper_status_id','paper_id','status','id'),)
     id = db.Column(db.Integer, primary_key=True)
     paper_id = db.Column(db.ForeignKey('paper.id'), nullable=False, index=True)
@@ -135,8 +136,48 @@ class Attempt(db.Model):
     status = db.Column(db.String(20), default='ACTIVE', index=True)
     result = db.Column(db.JSON)
     version = db.Column(db.Integer, default=1, nullable=False)
+    analytics_context = db.Column(db.JSON)  # Anonymous paper/device snapshot; no visitor identity.
     __mapper_args__ = {'version_id_col': version}
     items = db.relationship('AttemptAnswer', cascade='all, delete-orphan', order_by='AttemptAnswer.position')
+
+class AnalyticsEvent(db.Model):
+    """Permanent minimal usage ledger, independent of answers and catalog deletion."""
+    key = db.Column(db.String(80), primary_key=True)
+    started_at = db.Column(db.Float, nullable=False, index=True)
+    start_day = db.Column(db.String(10), nullable=False, index=True)
+    completed_at = db.Column(db.Float)
+    browser_key = db.Column(db.String(64), nullable=False, index=True)
+    paper_key = db.Column(db.String(64), nullable=False)
+    paper_name = db.Column(db.String(300), nullable=False)
+    course_key = db.Column(db.String(64), nullable=False)
+    course_name = db.Column(db.String(200), nullable=False)
+    initial_mode = db.Column(db.String(20), nullable=False)
+    completion_mode = db.Column(db.String(20))
+    device = db.Column(db.String(12), nullable=False)
+    automatic = db.Column(db.Boolean, nullable=False, default=False)
+    expires_at = db.Column(db.Float, nullable=False)
+    __table_args__ = (db.Index('ix_analytics_event_course_day','course_key','start_day'),)
+
+class AnalyticsReceipt(db.Model):
+    """Short-lived deduplication receipt, independent of temporary exam sessions."""
+    key = db.Column(db.String(80), primary_key=True)
+    started_at = db.Column(db.Float, nullable=False, index=True)
+    completed = db.Column(db.Boolean, nullable=False, default=False)
+
+class AnalyticsDaily(db.Model):
+    """Permanent aggregates. No answers, IPs, visitor hashes or user identifiers."""
+    day = db.Column(db.String(10), primary_key=True)  # IST start date
+    paper_key = db.Column(db.String(64), primary_key=True)
+    mode = db.Column(db.String(20), primary_key=True)
+    device = db.Column(db.String(12), primary_key=True)
+    paper_name = db.Column(db.String(300), nullable=False)
+    course_key = db.Column(db.String(64), nullable=False)
+    course_name = db.Column(db.String(200), nullable=False)
+    starts = db.Column(db.Integer, nullable=False, default=0)
+    completions = db.Column(db.Integer, nullable=False, default=0)
+    automatic = db.Column(db.Integer, nullable=False, default=0)
+    elapsed_seconds = db.Column(db.Float, nullable=False, default=0)
+    __table_args__ = (db.Index('ix_analytics_daily_course_day','course_key','day'),)
 
 class AttemptAnswer(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -254,3 +295,33 @@ class SolutionJob(db.Model):
     lease_until=db.Column(db.Float)
     retry_at=db.Column(db.Float,nullable=False,default=0)
     error=db.Column(db.String(240))
+
+class ContactMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(254), nullable=False)
+    topic = db.Column(db.String(40), nullable=False)
+    message = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(12), nullable=False, default='OPEN')
+    created_at = db.Column(db.Float, nullable=False, default=time.time)
+    __table_args__ = (db.Index('ix_contact_message_status_id', 'status', 'id'),)
+
+class CourseGuide(db.Model):
+    course_id = db.Column(db.Integer, db.ForeignKey('course.id', ondelete='CASCADE'), primary_key=True)
+    introduction = db.Column(db.Text, nullable=False, default='')
+    topics = db.Column(db.Text, nullable=False, default='')
+    prerequisites = db.Column(db.Text, nullable=False, default='')
+    mistakes = db.Column(db.Text, nullable=False, default='')
+    practice = db.Column(db.Text, nullable=False, default='')
+    published = db.Column(db.Boolean, nullable=False, default=False)
+
+class ContentQualityReview(db.Model):
+    question_id = db.Column(db.Integer, db.ForeignKey('question.id', ondelete='CASCADE'), primary_key=True)
+    fingerprint = db.Column(db.String(64), nullable=False)
+    checks = db.Column(db.JSON, nullable=False)
+    reviewed_at = db.Column(db.Float, nullable=False, default=time.time)
+
+class StudyPaperSettings(db.Model):
+    paper_id = db.Column(db.Integer, db.ForeignKey('paper.id', ondelete='CASCADE'), primary_key=True)
+    featured = db.Column(db.Boolean, nullable=False, default=False)
+    allow_ads = db.Column(db.Boolean, nullable=False, default=False)

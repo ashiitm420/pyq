@@ -203,3 +203,119 @@ preferences disable spinner animation. Exam options and navigation have no new a
 ## AI solutions: local PC generation
 
 Admin → AI Solutions queues small batches; a single local Windows worker generates Gemini text solutions, and administrators review/edit/publish them. Published explanations load only after practice Check answer or exam submission. Start Exam does not invoke AI or include solution text. Setup instructions: [tools/ai-worker/README.md](tools/ai-worker/README.md). Normal deployment migrations add the queue/solution tables; no source answer keys or scoring rules are changed.
+
+## Admin usage analytics
+
+Admin → Analytics shows permanent starts, submissions, active browsers (not exact
+people), initial exam/practice modes, expired unsubmitted sessions, elapsed completion
+duration, coarse device categories, popular papers/courses and daily trends.
+Today/7d/30d/all/custom ranges use IST start dates. CSV exports include definitions
+and date ranges. Mode switches are not new sessions; exams submitted in practice
+are separate from exam completions. Timer submissions are identified.
+
+Minimal durable usage records do not reference temporary attempts, answers or
+catalog foreign keys. They survive cleanup and process restarts. No historical
+counts are invented. Legacy best-effort daily totals are preserved in their old
+tables but excluded from new reports (they cannot establish browser identity).
+
+Run `flask --app backend:create_app db upgrade` before starting. The 0009 migration
+is retained for deployments that already applied it; 0010 adds the durable ledger.
+Do not downgrade production migrations or erase old statistics to revert code.
+
+No new frontend scripts/requests or writes on question navigation, answer save or
+Check Answer. A small INSERT/UPDATE shares the Start/Submit transaction inside a
+savepoint. Failed analytics statements roll back their savepoint and are logged;
+they do not intentionally fail the learner operation, but their counts can be
+missing. This is not zero overhead; compare ON/OFF latency on the actual hosting.
+Reports run on demand and are cached 30 seconds (at most 64 cache entries per
+process). Tables/chart are bounded to 50 entries/90 recorded days. Indexes support
+start-day/course queries. The permanent ledger grows with usage; monthly rollups
+are a future storage optimization, not a substitute for unique-browser evidence.
+
+Admins are excluded. Set ANALYTICS_EXCLUDE_TRAFFIC=true on a testing deployment,
+or ANALYTICS_ENABLED=false to disable collection. A random first-party HttpOnly
+cookie lasts up to one year; only its HMAC-derived identifier is stored. Clearing
+cookies, changing devices or rotating SECRET_KEY changes browser counts. Analytics
+never stores names, emails, IPs, full User-Agent, fingerprints or learner answers.
+
+Content Reports includes Hide & mark resolved beside Mark resolved: atomic,
+audited, version-checked and blocked during processing. Existing attempts keep
+snapshots; newly started papers exclude the hidden question.
+
+### Public content quality and study pages
+
+**Admin → Content Quality** runs explicit scans in batches of 200. Choose a course
+and optionally a paper, then scan from the beginning / next batch. The scan flags
+internal exam metadata, unmatched image tokens, extraction warnings, possible
+course contamination and solution/key/version/LaTeX inconsistencies. Duplicate
+text detection compares questions within the current batch. These are heuristics,
+not a correctness guarantee. No question is automatically deleted or hidden.
+Open the original PDF, preview, then use the existing question editor or Hide.
+Question/solution edits invalidate the stored review fingerprint.
+
+The four manual checks cover original source, calculations/reasoning, options,
+and formatting. They record an administrator assessment; no AI API is invoked.
+A source-key match alone does not establish that the explanation is correct.
+
+The course guide editor provides introduction, topics, prior knowledge, common
+mistakes and practice guidance. Original starter guidance is supplied for common
+Foundation/Diploma courses plus Corporate Finance and Reinforcement Learning;
+unmatched courses need an administrator-written guide. Starter guidance is not an
+official syllabus. Save an unpublished guide to hide its starter text. Publishing
+requires every section to be filled. Public guides are plain text / LaTeX, not HTML.
+
+Choose a paper and enable **Feature this paper** to link it on Home and
+`/study/featured`. It appears only with current published solutions; archived and
+partially extracted papers are excluded. Titles use course, exam, term and session.
+Public pages include breadcrumbs, question jump links and current solution counts.
+SSR places source diagrams at image tokens, keeps unreferenced diagrams visible,
+converts Markdown tables into semantic tables and escapes all source HTML.
+
+### Contact form
+
+`/contact` stores name, reply email, topic, message and submission time privately.
+**Admin → Contact Inbox** can resolve/reopen/delete; Reply opens your email app.
+No email-provider key or automatic email notification is needed. CSRF, honeypot,
+field limits and the existing limiter backend protect submissions. The contact
+migration is additive and does not modify questions, scoring or source assets.
+
+### Advertising and certified consent — external setup required
+
+Ads are OFF by default. This release does not add any global ad loader.
+Only a public `/study/papers/<id>` page can request a manual ad: its paper must be
+fully available, every available question must have a current published solution,
+all automatic quality flags must be cleared, every question must have a current
+manual review, and the administrator must tick Allow ads for the paper.
+No ad scripts are loaded by exam/practice, admin, empty filters, contact or policy pages.
+
+Before enabling:
+1. Configure and publish a **Google-certified CMP** for the real domain using
+   AdSense Privacy & messaging (or another certified provider).
+2. Put its actual unmodified web snippet in `backend/templates/certified_cmp.html`.
+   Confirm its CSP requirements; the included eligible-page policy permits the
+   Google fundingchoices script/frame origins but is not a generic third-party CMP policy.
+3. Set the real `ADSENSE_PUBLISHER_ID` and manual unit `ADSENSE_STUDY_SLOT`, then
+   `ADSENSE_CMP_READY=true` and `STUDY_ADS_ENABLED=true` only after testing consent.
+4. Keep Auto ads OFF in AdSense (or configure account-side exclusions). Code cannot
+   change your AdSense dashboard settings. This implementation uses a single manual
+   slot after content, away from question navigation and test controls.
+
+The loader makes no Google ad request until the CMP reports affirmative storage
+and Google-vendor consent, even outside the EEA. Missing CMP/refusal/errors keep
+ads hidden. Withdrawal reloads the page to discard the existing ad script.
+This conservative gate does not itself implement or certify a consent platform.
+Test the real CMP and real ad unit on the deployed site before enabling; no claim
+of AdSense approval is made. See Google's consent requirements and page exclusions:
+https://support.google.com/adsense/answer/13554116 and
+https://support.google.com/adsense/answer/9262311.
+
+### Deployment identity
+
+Admin → Content Quality → Deployment identity shows public origin, Render service,
+repo slug, branch, deployed commit and built app asset. Compare with the intended
+GitHub main. This identifies the current app only, not another Render account.
+Read-only check on 15 October 2026: `pyq-mz65.onrender.com` is connected to
+`22f3000982/pyq` main and its latest live commit was
+`d1ddc5ca92383d44aaf3d57e75b0acdc00f4f79d`. The connected workspace did not contain
+`mauryahubpyq.onrender.com`; the custom-domain deployment must be verified from
+its owning Render account. No infrastructure settings were changed.

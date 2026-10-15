@@ -10,6 +10,29 @@ from .engine import question_snapshot,validate_question,aggregate
 from .ingestion import store_upload,update_batch,root
 admin=Blueprint('admin',__name__,url_prefix='/api/admin')
 
+@admin.post('/catalog/repair-java-2025')
+@require_user(True)
+def repair_java_sources():
+    from .catalog_repairs import repair_java_2025
+    payload=body()
+    apply=payload.get('apply',False)
+    if not isinstance(apply,bool):abort(400,description='apply must be true or false')
+    try:return jsonify(repair_java_2025(g.user.id,apply))
+    except ValueError as exc:
+        db.session.rollback();abort(409,description=str(exc))
+
+@admin.get('/analytics')
+@require_user(True)
+def analytics_report():
+    from .analytics import cached_report,csv_report
+    from flask import Response
+    try:
+        result=cached_report(request.args.get('period','7d'),request.args.get('start'),request.args.get('end'))
+    except ValueError as e:abort(400,description=str(e))
+    if request.args.get('format')=='csv':
+        return Response(csv_report(result),mimetype='text/csv',headers={'Content-Disposition':'attachment; filename="mauryahub-usage.csv"'})
+    return jsonify(result)
+
 def admin_question(q):return {**question_snapshot(q),'status':q.status,'confidence':q.confidence,'warnings':q.warnings,'ingestion_file_id':q.ingestion_file_id,'hidden':q.status=='HIDDEN','manual_locked':bool((q.evidence or {}).get('_admin_locked'))}
 def file_json(f):return {k:getattr(f,k) for k in ('id','batch_id','paper_id','filename','status','error','warnings','pages','extracted','retries','started_at','finished_at','source_url','events','duplicate_of_id')}
 
@@ -282,6 +305,23 @@ def library_reset():
     try:return jsonify(reset_library(g.user.id,cleanup_storage=payload.get('cleanup_storage',True),cancel_active=payload.get('cancel_active',False)))
     except RuntimeError as exc:abort(409,description=str(exc))
 
+@admin.get('/library-reset/diploma/preview')
+@require_user(True)
+def diploma_reset_preview():
+    from .library_campaign import diploma_reset_inventory
+    return jsonify(diploma_reset_inventory())
+
+@admin.post('/library-reset/diploma')
+@require_user(True)
+def diploma_reset():
+    from .library_campaign import reset_diploma
+    if body().get('confirmation')!='RESET DIPLOMA':
+        abort(400,description='Type RESET DIPLOMA exactly to confirm.')
+    try:return jsonify(reset_diploma(g.user.id))
+    except RuntimeError as exc:
+        db.session.rollback()
+        abort(409,description=str(exc))
+
 @admin.get('/catalog/batches/latest')
 @require_user(True)
 def latest_catalog_batch():
@@ -522,10 +562,24 @@ def content_report_detail(id):
 @admin.patch('/content-reports/<int:id>')
 @require_user(True)
 def update_content_report(id):
-    r=db.get_or_404(ContentReport,id);status=body().get('status')
+    r=db.get_or_404(ContentReport,id);payload=body();status=payload.get('status')
     if status not in ('OPEN','RESOLVED'):abort(400,description='Invalid report status.')
+    hide=payload.get('hide_question',False)
+    if type(hide) is not bool or (hide and status!='RESOLVED'):abort(400,description='Hide requires a resolved report.')
+    if hide:
+        from .admin_content import conflict,state,audit
+        q=db.session.execute(db.select(Question).filter_by(id=r.question_id).with_for_update()).scalar_one_or_none()
+        if q is None:abort(404)
+        conflict(q,payload)
+        if q.status!='HIDDEN':
+            before=state(q)
+            q.evidence={**(q.evidence or {}),'_admin_locked':True,'_admin_previous_status':q.status}
+            q.status='HIDDEN';audit(q,before,'HIDE')
     r.status=status;r.resolved_at=time.time() if status=='RESOLVED' else None
     db.session.commit();return jsonify(report_json(r))
 
 from .admin_content import register_content_routes
 register_content_routes(admin)
+
+from .contact import register_contact_routes
+register_contact_routes(admin)
