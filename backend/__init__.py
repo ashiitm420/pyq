@@ -90,31 +90,6 @@ def create_app(config=None):
     app.config['UPLOAD_DIR']=str((root/upload_path).resolve() if not upload_path.is_absolute() else upload_path)
     Path(app.config['UPLOAD_DIR']).mkdir(parents=True, exist_ok=True)
     db.init_app(app); Migrate(app, db); limiter.init_app(app)
-    from sqlalchemy import event as _sa_event
-    from sqlalchemy.engine import Engine as _sa_Engine
-    import time as _ping_time
-    @_sa_event.listens_for(_sa_Engine, 'do_ping')
-    def _fast_do_ping(dbapi_connection):
-        now = _ping_time.monotonic()
-        last = _fast_do_ping._last.get(id(dbapi_connection), 0)
-        if now - last < 45.0:
-            return True
-        try:
-            cursor = dbapi_connection.cursor()
-            try:
-                cursor.execute('SELECT 1')
-            finally:
-                cursor.close()
-            _fast_do_ping._last[id(dbapi_connection)] = now
-            return True
-        except Exception:
-            _fast_do_ping._last.pop(id(dbapi_connection), None)
-            return False
-    _fast_do_ping._last = {}
-    @_sa_event.listens_for(_sa_Engine, 'checkin')
-    def _record_checkin(dbapi_connection, connection_record):
-        if dbapi_connection is not None:
-            _fast_do_ping._last[id(dbapi_connection)] = _ping_time.monotonic()
     from .analytics import install as install_analytics
     install_analytics(app)
     from .performance import install
