@@ -103,16 +103,6 @@ def invalidate():
         r = client()
         if r is not None:r.set(prefix()+':epoch', uuid.uuid4().hex)
     except Exception:
-        current_app.logger.warning('content_cache_invalidation_failed; entries expire within configured TTL')
-
-invalidate_content_cache = invalidate
-
-def _old_invalidate_unused():
-    _local_clear()
-    try:
-        r = client()
-        if r is not None:r.set(prefix()+':epoch', uuid.uuid4().hex)
-    except Exception:
         # Local entries are already cleared in this process. Other processes have
         # a bounded TTL even if shared invalidation is temporarily unavailable.
         current_app.logger.warning('content_cache_invalidation_failed; entries expire within configured TTL')

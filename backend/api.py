@@ -305,7 +305,7 @@ def get_site_feedback():
 @api.post('/feedback')
 @limiter.limit('5 per hour')
 def post_site_feedback():
-    from .content_cache import invalidate
+    from .content_cache import invalidate_content_cache
     data = body()
     name = str(data.get('name') or '').strip()[:80] or 'Anonymous Student'
     message = str(data.get('message') or '').strip()
@@ -326,5 +326,5 @@ def post_site_feedback():
     )
     db.session.add(row)
     db.session.commit()
-    invalidate()
+    invalidate_content_cache()
     return jsonify(ok=True, **(_load_site_feedback())), 201
